@@ -1,0 +1,15 @@
+[Unit]
+Description=Staging preview self-healing and retention
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/staging-preview/scripts/ops/staging-maintenance.sh
+Environment=STAGING_PREVIEW_BASE_DIR=/opt/staging-preview
+Environment=BACKUP_ROOT=/opt/staging-preview/backups
+Environment=BACKUP_RETENTION_DAYS=7
+Environment=LOG_RETENTION_DAYS=7
+Environment=TRASH_RETENTION_HOURS=24
+Environment=DISK_WARN_PERCENT=85
+Environment=DISK_CRIT_PERCENT=92

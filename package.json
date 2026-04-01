@@ -1,0 +1,14 @@
+{
+  "name": "staging-preview",
+  "version": "1.0.0",
+  "description": "Vercel-style PR preview environments on your own infrastructure",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/ci/derive-preview-meta.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run staging preview maintenance daily
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=staging-preview-maintenance.service
+
+[Install]
+WantedBy=timers.target

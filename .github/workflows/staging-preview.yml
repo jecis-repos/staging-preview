@@ -1,0 +1,134 @@
+name: Staging Preview Lifecycle
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, staging-vps]
+    timeout-minutes: 30
+    concurrency:
+      group: staging-preview-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    env:
+      STAGING_PREVIEW_BASE_DIR: ${{ secrets.STAGING_BASE_DIR }}
+      STAGING_PREVIEW_DOMAIN: ${{ secrets.STAGING_DOMAIN }}
+      STAGING_PREVIEW_DISABLE_HOSTS_UPDATE: "true"
+      STAGING_PREVIEW_CADDY_MANAGED_TLS: "false"
+      STAGING_PREVIEW_CERT_PATH: ${{ secrets.CERT_PATH }}
+      STAGING_PREVIEW_CERT_KEY_PATH: ${{ secrets.CERT_KEY_PATH }}
+      STAGING_PREVIEW_CADDY_CERT_PATH: ${{ secrets.CADDY_CERT_PATH }}
+      STAGING_PREVIEW_CADDY_CERT_KEY_PATH: ${{ secrets.CADDY_CERT_KEY_PATH }}
+      TIMEZONE: ${{ vars.TIMEZONE || 'UTC' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP server dependencies
+        run: npm --prefix mcp-server ci
+
+      - name: Build MCP server
+        run: npm --prefix mcp-server run build
+
+      - name: Sync runtime workspace
+        run: |
+          rsync -a --delete \
+            --exclude '*.dump' \
+            --exclude '.env' \
+            --exclude 'docs/logs/' \
+            --exclude '_docker/caddy/certs/*' \
+            --exclude '**/storage/**' \
+            --exclude '**/vendor/**' \
+            --exclude '**/node_modules/**' \
+            "$GITHUB_WORKSPACE"/ \
+            "$STAGING_PREVIEW_BASE_DIR"/
+
+      - name: Derive preview metadata
+        id: meta
+        run: node scripts/ci/derive-preview-meta.mjs
+
+      - name: Provision preview
+        if: steps.meta.outputs.preview_mode == 'provision'
+        env:
+          PREVIEW_MODE: provision
+          INSTANCE_NAME: ${{ steps.meta.outputs.instance_name }}
+          BRANCH_NAME: ${{ steps.meta.outputs.branch_name }}
+          DB_SEED: ${{ steps.meta.outputs.db_seed }}
+          DISPLAY_NAME: ${{ steps.meta.outputs.display_name }}
+        run: node scripts/ci/preview-lifecycle.mjs
+
+      - name: Destroy preview
+        if: steps.meta.outputs.preview_mode == 'destroy'
+        env:
+          PREVIEW_MODE: destroy
+          INSTANCE_NAME: ${{ steps.meta.outputs.instance_name }}
+        run: node scripts/ci/preview-lifecycle.mjs
+
+      - name: Publish summary
+        if: steps.meta.outputs.preview_mode != 'skip'
+        run: |
+          {
+            echo "### Staging Preview"
+            echo "- Mode: \`${{ steps.meta.outputs.preview_mode }}\`"
+            echo "- Instance: \`${{ steps.meta.outputs.instance_name }}\`"
+            echo "- Branch: \`${{ steps.meta.outputs.branch_name }}\`"
+            echo "- DB seed: \`${{ steps.meta.outputs.db_seed }}\`"
+            echo "- Host: https://${{ steps.meta.outputs.preview_host }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish skip summary
+        if: steps.meta.outputs.preview_mode == 'skip'
+        run: |
+          {
+            echo "### Staging Preview — Skipped"
+            echo "The \`skip-staging\` label is present. No preview instance was created."
+            echo "- Branch: \`${{ steps.meta.outputs.branch_name }}\`"
+            echo "- Instance would be: \`${{ steps.meta.outputs.instance_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR with preview URL
+        if: steps.meta.outputs.preview_mode == 'provision' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body "$(cat <<EOF
+          ### Staging Preview Ready
+
+          **Instance:** \`${{ steps.meta.outputs.instance_name }}\`
+          **URL:** https://${{ steps.meta.outputs.preview_host }}
+          **Branch:** \`${{ steps.meta.outputs.branch_name }}\`
+          **DB seed:** \`${{ steps.meta.outputs.db_seed }}\`
+
+          Preview will be destroyed when this PR is closed or merged.
+          EOF
+          )"
+
+      - name: Comment on failure
+        if: failure() && steps.meta.outputs.preview_mode != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body "$(cat <<EOF
+          ### Staging Preview Failed
+
+          **Mode:** \`${{ steps.meta.outputs.preview_mode }}\`
+          **Instance:** \`${{ steps.meta.outputs.instance_name }}\`
+          **Branch:** \`${{ steps.meta.outputs.branch_name }}\`
+
+          [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )"

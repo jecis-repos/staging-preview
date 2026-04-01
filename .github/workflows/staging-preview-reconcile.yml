@@ -1,0 +1,57 @@
+name: Staging Preview Reconcile
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, linux, staging-vps]
+    timeout-minutes: 15
+    env:
+      STAGING_PREVIEW_BASE_DIR: ${{ secrets.STAGING_BASE_DIR }}
+      STAGING_PREVIEW_DOMAIN: ${{ secrets.STAGING_DOMAIN }}
+      STAGING_PREVIEW_DISABLE_HOSTS_UPDATE: "true"
+      STAGING_PREVIEW_CADDY_MANAGED_TLS: "false"
+      STAGING_PREVIEW_CERT_PATH: ${{ secrets.CERT_PATH }}
+      STAGING_PREVIEW_CERT_KEY_PATH: ${{ secrets.CERT_KEY_PATH }}
+      STAGING_PREVIEW_CADDY_CERT_PATH: ${{ secrets.CADDY_CERT_PATH }}
+      STAGING_PREVIEW_CADDY_CERT_KEY_PATH: ${{ secrets.CADDY_CERT_KEY_PATH }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install MCP server dependencies
+        run: npm --prefix mcp-server ci
+
+      - name: Build MCP server
+        run: npm --prefix mcp-server run build
+
+      - name: Sync runtime workspace
+        run: |
+          rsync -a --delete \
+            --exclude '*.dump' \
+            --exclude '.env' \
+            --exclude 'docs/logs/' \
+            --exclude '_docker/caddy/certs/*' \
+            --exclude '**/storage/**' \
+            --exclude '**/vendor/**' \
+            --exclude '**/node_modules/**' \
+            "$GITHUB_WORKSPACE"/ \
+            "$STAGING_PREVIEW_BASE_DIR"/
+
+      - name: Reconcile stale preview instances
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/reconcile-previews.mjs
