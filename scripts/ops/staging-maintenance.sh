@@ -5,8 +5,9 @@ set -uo pipefail
 
 BASE_DIR="${STAGING_PREVIEW_BASE_DIR:-/opt/staging-preview}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/staging-preview/backups}"
-MCP_SERVER="${BASE_DIR}/mcp-server"
-REGISTRY="${MCP_SERVER}/registry.json"
+TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REGISTRY="${BASE_DIR}/mcp-server/registry.json"
+export STAGING_PREVIEW_BASE_DIR="${BASE_DIR}"
 LOG_FILE="/var/log/staging-preview-maintenance.log"
 DISK_WARN_PERCENT="${DISK_WARN_PERCENT:-85}"
 DISK_CRIT_PERCENT="${DISK_CRIT_PERCENT:-92}"
@@ -129,12 +130,15 @@ for i in r.get('instances', []):
 
   while read -r prefix; do
     warn "[expiry] Instance ${prefix} has expired — removing"
-    if cd "${MCP_SERVER}" && node -e "
-      import('./dist/tools/remove-instance.js').then(async m => {
-        const result = await m.removeInstanceTool({ name: '${prefix}', keep_database: false, keep_files: false });
-        console.log(result);
-      });
-    " 2>>"${LOG_FILE}"; then
+    if node --input-type=module - "${TOOLING_DIR}" "${prefix}" <<'NODE' 2>>"${LOG_FILE}"
+      import { pathToFileURL } from 'node:url';
+      const { loadRuntime } = await import(pathToFileURL(process.argv[2] + '/scripts/ci/runtime.mjs'));
+      const m = await loadRuntime();
+      const result = await m.removeInstanceTool({ name: process.argv[3], keep_database: false, keep_files: false });
+      console.log(result);
+      if (/ERROR:/i.test(result)) process.exitCode = 1;
+NODE
+    then
       log "[expiry] Removed expired instance ${prefix}"
     else
       warn "[expiry] Failed to remove ${prefix}"

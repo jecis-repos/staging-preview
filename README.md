@@ -1,6 +1,6 @@
 # staging-preview
 
-Vercel-style PR preview environments on your own infrastructure. Open a PR, get a live URL in 60 seconds. Close the PR, instance destroyed. Zero vendor lock-in.
+Vercel-style PR preview environments on your own infrastructure. Provision and remove previews through GitHub Actions using a prepared Docker Compose workspace. Build time depends on the application and its dependencies.
 
 ## How it works
 
@@ -17,10 +17,11 @@ A separate reconciliation workflow runs hourly to catch orphaned instances that 
 
 ```bash
 # 1. Clone onto your VPS
-git clone https://github.com/<owner>/staging-preview.git /opt/staging-preview
+git clone --recurse-submodules https://github.com/jecis-repos/staging-preview.git /opt/staging-preview
 cd /opt/staging-preview
 
-# 2. Install Node dependencies for the MCP server
+# 2. Install the pinned public dev-machine backend
+# Existing checkouts: git submodule update --init --recursive
 npm --prefix mcp-server ci
 npm --prefix mcp-server run build
 
@@ -33,7 +34,8 @@ scripts/ops/register-runner.sh \
 # 4. Copy the workflow files into your application repo
 cp -r .github/workflows/staging-preview*.yml <your-app>/.github/workflows/
 
-# 5. Configure GitHub secrets (see table below)
+# 5. Configure GitHub secrets and set STAGING_PREVIEW_ENABLED=true
+#    as an application repository variable (see below).
 
 # 6. Install the systemd maintenance timer
 sudo cp systemd/staging-preview-maintenance.service /etc/systemd/system/
@@ -42,22 +44,33 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now staging-preview-maintenance.timer
 ```
 
+### Application workspace
+
+The pinned `mcp-server/` submodule is [dev-machine](https://github.com/jecis-repos/dev-machine). The workflow checks out this tooling separately from your application and maps `STAGING_PREVIEW_*` settings to its runtime.
+
+`STAGING_BASE_DIR` must name an existing, dedicated workspace on the runner host: its Git `origin` points to the application, and it contains the application's `docker-compose.yml`, `_docker/env.template`, `_docker/caddy/Caddyfile`, `_docker/postgres/init.sql`, and a writable `mcp-server/` directory for `registry.json`. Its shared PostgreSQL, Redis and Caddy services and application PHP image must be configured before provisioning. This repository supplies lifecycle automation; it does not install or configure those application services. No workflow synchronizes or deletes the workspace's existing files.
+
+The example systemd service uses `/opt/staging-preview` for scripts. Set `STAGING_PREVIEW_BASE_DIR` in its drop-in to the same application workspace. Run `npm run build && npm test` to verify the tooling without provisioning an instance.
+
 ## GitHub secrets configuration
 
 | Secret | Description | Example |
 |---|---|---|
-| `STAGING_BASE_DIR` | Absolute path to the staging-preview installation | `/opt/staging-preview` |
+| `STAGING_BASE_DIR` | Absolute path to the prepared application workspace | `/srv/previews/my-app` |
 | `STAGING_DOMAIN` | Wildcard domain for preview instances | `preview.example.com` |
 | `CERT_PATH` | Host path to the TLS certificate | `/etc/ssl/certs/preview.pem` |
 | `CERT_KEY_PATH` | Host path to the TLS private key | `/etc/ssl/private/preview.key` |
 | `CADDY_CERT_PATH` | Container-mounted path to the TLS certificate | `/etc/caddy/certs/preview.pem` |
 | `CADDY_CERT_KEY_PATH` | Container-mounted path to the TLS private key | `/etc/caddy/certs/preview.key` |
 
-Optional repository variable:
+Repository variables:
 
 | Variable | Description | Default |
 |---|---|---|
+| `STAGING_PREVIEW_ENABLED` | Enable the preview workflows in the application repository | `false` |
 | `TIMEZONE` | Timezone for preview instances | `UTC` |
+
+For database seeds, set the application repository variable `STAGING_PREVIEW_DB_DUMPS` (or the same environment variable for direct CLI use) to a JSON object mapping labels to sanitized dump paths, for example `{"default":"/srv/dumps/example.sql"}`. `db:none` always creates an empty database. An unmapped non-default label fails explicitly.
 
 ## Architecture
 
@@ -68,7 +81,7 @@ Pull Request Event
 +-------------------------------+
 | staging-preview.yml           |  GitHub Actions (self-hosted runner)
 |  1. Checkout + build MCP      |
-|  2. rsync workspace to VPS    |
+|  2. Use prepared workspace   |
 |  3. derive-preview-meta.mjs   |  --> instance name, mode, db seed
 |  4. preview-lifecycle.mjs     |  --> provision / update / destroy
 |  5. Post PR comment           |
@@ -193,4 +206,4 @@ MIT -- see [LICENSE](LICENSE).
 
 ---
 
-Author: [Jekabs Porietis](https://github.com/coolJecis)
+Author: [Jekabs Porietis](https://github.com/jecis-repos)

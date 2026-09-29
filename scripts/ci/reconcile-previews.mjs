@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile } from 'fs/promises';
-import { removeInstanceTool } from '../../mcp-server/dist/tools/remove-instance.js';
+import { loadRuntime } from './runtime.mjs';
 import { sanitizeSlug, extractTaskToken, deriveTaskInstanceName, hasError } from './preview-naming.mjs';
 
 function required(name) {
@@ -68,6 +68,7 @@ async function run() {
     throw new Error(`Invalid GITHUB_REPOSITORY: ${repo}`);
   }
 
+  const { removeInstanceTool, registryPath } = await loadRuntime();
   const openPrs = await listOpenPullRequests(owner, repoName, token);
   const activePreviewPrefixes = new Set(
     openPrs
@@ -76,7 +77,7 @@ async function run() {
   );
   let instances = [];
   try {
-    const registryRaw = await readFile('mcp-server/registry.json', 'utf-8');
+    const registryRaw = await readFile(registryPath, 'utf-8');
     const registry = JSON.parse(registryRaw);
     instances = Array.isArray(registry?.instances) ? registry.instances : [];
   } catch {

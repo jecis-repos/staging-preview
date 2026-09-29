@@ -11,7 +11,11 @@ permissions:
 
 jobs:
   reconcile:
+    if: vars.STAGING_PREVIEW_ENABLED == 'true'
     runs-on: [self-hosted, linux, staging-vps]
+    defaults:
+      run:
+        working-directory: preview-tooling
     timeout-minutes: 15
     env:
       STAGING_PREVIEW_BASE_DIR: ${{ secrets.STAGING_BASE_DIR }}
@@ -24,8 +28,13 @@ jobs:
       STAGING_PREVIEW_CADDY_CERT_KEY_PATH: ${{ secrets.CADDY_CERT_KEY_PATH }}
 
     steps:
-      - name: Checkout
+      - name: Checkout preview tooling
         uses: actions/checkout@v4
+        with:
+          repository: jecis-repos/staging-preview
+          ref: main
+          path: preview-tooling
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,19 +46,6 @@ jobs:
 
       - name: Build MCP server
         run: npm --prefix mcp-server run build
-
-      - name: Sync runtime workspace
-        run: |
-          rsync -a --delete \
-            --exclude '*.dump' \
-            --exclude '.env' \
-            --exclude 'docs/logs/' \
-            --exclude '_docker/caddy/certs/*' \
-            --exclude '**/storage/**' \
-            --exclude '**/vendor/**' \
-            --exclude '**/node_modules/**' \
-            "$GITHUB_WORKSPACE"/ \
-            "$STAGING_PREVIEW_BASE_DIR"/
 
       - name: Reconcile stale preview instances
         env:

@@ -10,8 +10,11 @@ permissions:
 
 jobs:
   preview:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: vars.STAGING_PREVIEW_ENABLED == 'true' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, staging-vps]
+    defaults:
+      run:
+        working-directory: preview-tooling
     timeout-minutes: 30
     concurrency:
       group: staging-preview-pr-${{ github.event.pull_request.number }}
@@ -25,11 +28,17 @@ jobs:
       STAGING_PREVIEW_CERT_KEY_PATH: ${{ secrets.CERT_KEY_PATH }}
       STAGING_PREVIEW_CADDY_CERT_PATH: ${{ secrets.CADDY_CERT_PATH }}
       STAGING_PREVIEW_CADDY_CERT_KEY_PATH: ${{ secrets.CADDY_CERT_KEY_PATH }}
+      STAGING_PREVIEW_DB_DUMPS: ${{ vars.STAGING_PREVIEW_DB_DUMPS }}
       TIMEZONE: ${{ vars.TIMEZONE || 'UTC' }}
 
     steps:
-      - name: Checkout
+      - name: Checkout preview tooling
         uses: actions/checkout@v4
+        with:
+          repository: jecis-repos/staging-preview
+          ref: main
+          path: preview-tooling
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -41,19 +50,6 @@ jobs:
 
       - name: Build MCP server
         run: npm --prefix mcp-server run build
-
-      - name: Sync runtime workspace
-        run: |
-          rsync -a --delete \
-            --exclude '*.dump' \
-            --exclude '.env' \
-            --exclude 'docs/logs/' \
-            --exclude '_docker/caddy/certs/*' \
-            --exclude '**/storage/**' \
-            --exclude '**/vendor/**' \
-            --exclude '**/node_modules/**' \
-            "$GITHUB_WORKSPACE"/ \
-            "$STAGING_PREVIEW_BASE_DIR"/
 
       - name: Derive preview metadata
         id: meta
@@ -78,57 +74,51 @@ jobs:
 
       - name: Publish summary
         if: steps.meta.outputs.preview_mode != 'skip'
+        env:
+          PREVIEW_MODE: ${{ steps.meta.outputs.preview_mode }}
+          INSTANCE_NAME: ${{ steps.meta.outputs.instance_name }}
+          BRANCH_NAME: ${{ steps.meta.outputs.branch_name }}
+          DB_SEED: ${{ steps.meta.outputs.db_seed }}
+          PREVIEW_HOST: ${{ steps.meta.outputs.preview_host }}
         run: |
           {
-            echo "### Staging Preview"
-            echo "- Mode: \`${{ steps.meta.outputs.preview_mode }}\`"
-            echo "- Instance: \`${{ steps.meta.outputs.instance_name }}\`"
-            echo "- Branch: \`${{ steps.meta.outputs.branch_name }}\`"
-            echo "- DB seed: \`${{ steps.meta.outputs.db_seed }}\`"
-            echo "- Host: https://${{ steps.meta.outputs.preview_host }}"
+            printf '### Staging Preview\n'
+            printf -- '- Mode: `%s`\n- Instance: `%s`\n- Branch: `%s`\n- DB seed: `%s`\n- Host: https://%s\n' "$PREVIEW_MODE" "$INSTANCE_NAME" "$BRANCH_NAME" "$DB_SEED" "$PREVIEW_HOST"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish skip summary
         if: steps.meta.outputs.preview_mode == 'skip'
-        run: |
-          {
-            echo "### Staging Preview — Skipped"
-            echo "The \`skip-staging\` label is present. No preview instance was created."
-            echo "- Branch: \`${{ steps.meta.outputs.branch_name }}\`"
-            echo "- Instance would be: \`${{ steps.meta.outputs.instance_name }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Preview skipped because the skip-staging label is present.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on PR with preview URL
         if: steps.meta.outputs.preview_mode == 'provision' && success()
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INSTANCE_NAME: ${{ steps.meta.outputs.instance_name }}
+          BRANCH_NAME: ${{ steps.meta.outputs.branch_name }}
+          DB_SEED: ${{ steps.meta.outputs.db_seed }}
+          PREVIEW_HOST: ${{ steps.meta.outputs.preview_host }}
         run: |
-          gh pr comment "${{ github.event.pull_request.number }}" \
-            --body "$(cat <<EOF
-          ### Staging Preview Ready
-
-          **Instance:** \`${{ steps.meta.outputs.instance_name }}\`
-          **URL:** https://${{ steps.meta.outputs.preview_host }}
-          **Branch:** \`${{ steps.meta.outputs.branch_name }}\`
-          **DB seed:** \`${{ steps.meta.outputs.db_seed }}\`
-
-          Preview will be destroyed when this PR is closed or merged.
-          EOF
-          )"
+          {
+            printf '### Staging Preview Ready\n\n'
+            printf '**Instance:** `%s`\n**URL:** https://%s\n**Branch:** `%s`\n**DB seed:** `%s`\n\n' "$INSTANCE_NAME" "$PREVIEW_HOST" "$BRANCH_NAME" "$DB_SEED"
+            printf 'Preview will be destroyed when this PR is closed or merged.\n'
+          } > "$RUNNER_TEMP/preview-comment.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/preview-comment.md"
 
       - name: Comment on failure
         if: failure() && steps.meta.outputs.preview_mode != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_MODE: ${{ steps.meta.outputs.preview_mode }}
+          INSTANCE_NAME: ${{ steps.meta.outputs.instance_name }}
+          BRANCH_NAME: ${{ steps.meta.outputs.branch_name }}
         run: |
-          gh pr comment "${{ github.event.pull_request.number }}" \
-            --body "$(cat <<EOF
-          ### Staging Preview Failed
-
-          **Mode:** \`${{ steps.meta.outputs.preview_mode }}\`
-          **Instance:** \`${{ steps.meta.outputs.instance_name }}\`
-          **Branch:** \`${{ steps.meta.outputs.branch_name }}\`
-
-          [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          EOF
-          )"
+          {
+            printf '### Staging Preview Failed\n\n'
+            printf '**Mode:** `%s`\n**Instance:** `%s`\n**Branch:** `%s`\n\n' "$PREVIEW_MODE" "$INSTANCE_NAME" "$BRANCH_NAME"
+            printf '[View workflow run](%s/%s/actions/runs/%s)\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/preview-comment.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/preview-comment.md"

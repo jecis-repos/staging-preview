@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/ci/derive-preview-meta.test.mjs"
+    "build": "npm --prefix mcp-server run build",
+    "test": "node --test scripts/ci/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
