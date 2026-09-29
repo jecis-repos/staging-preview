@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
-import { createInstance } from '../../mcp-server/dist/tools/create-instance.js';
-import { removeInstanceTool } from '../../mcp-server/dist/tools/remove-instance.js';
-import { updateInstance } from '../../mcp-server/dist/tools/update-instance.js';
+import { loadRuntime } from './runtime.mjs';
 import { hasError } from './preview-naming.mjs';
 
 function required(name) {
@@ -64,6 +62,8 @@ async function healthCheck(instanceName, domainSuffix) {
 async function run() {
   const mode = required('PREVIEW_MODE');
   const name = required('INSTANCE_NAME');
+  if (!['provision', 'destroy'].includes(mode)) throw new Error(`Unsupported PREVIEW_MODE: ${mode}`);
+  const { createInstance, removeInstanceTool, updateInstance } = await loadRuntime();
 
   let output = '';
 
@@ -72,6 +72,11 @@ async function run() {
     const displayName = process.env.DISPLAY_NAME?.trim() || `Preview ${name}`;
     const timezone = process.env.TIMEZONE?.trim() || 'UTC';
     const dbSeed = process.env.DB_SEED?.trim() || 'default';
+    const dumpPaths = JSON.parse(process.env.STAGING_PREVIEW_DB_DUMPS || '{}');
+    const dumpPath = dbSeed === 'none' ? undefined : dumpPaths[dbSeed];
+    if (dbSeed !== 'default' && dbSeed !== 'none' && !dumpPath) {
+      throw new Error(`No dump path configured for db:${dbSeed}; set STAGING_PREVIEW_DB_DUMPS`);
+    }
     const ttlHours = parseInt(process.env.PREVIEW_TTL_HOURS || '0', 10) || undefined;
 
     output = await createInstance({
@@ -79,7 +84,7 @@ async function run() {
       name,
       display_name: displayName,
       timezone,
-      db_seed: dbSeed,
+      db_dump_path: dumpPath,
       ttl_hours: ttlHours,
     });
 
@@ -107,7 +112,7 @@ async function run() {
           name,
           display_name: displayName,
           timezone,
-          db_seed: dbSeed,
+          db_dump_path: dumpPath,
           ttl_hours: ttlHours,
         });
       }
